@@ -8,7 +8,6 @@ const rooms = new Map();
 const wss = new WebSocketServer({ noServer: true });
 
 wss.on('connection', (ws, request) => {
-  // Парсим URL: /?room=abc123&peer=user456
   const url = new URL(request.url, 'http://dummy');
   const roomId = url.searchParams.get('room');
   const peerId = url.searchParams.get('peer');
@@ -18,18 +17,37 @@ wss.on('connection', (ws, request) => {
     return;
   }
 
-  console.log(`Peer ${peerId} joined room ${roomId}`);
+  // Проверяем: существует ли комната?
+  const roomExists = rooms.has(roomId);
 
-  // Создаём комнату, если нет
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, new Set());
+  // Только "host" может создать комнату, и только если её нет
+  if (!roomExists) {
+    if (peerId === 'host') {
+      // Создаём комнату
+      rooms.set(roomId, new Set());
+      console.log(`Room ${roomId} created by host`);
+    } else {
+      // Зритель пытается подключиться к несуществующей комнате
+      ws.close(4002, 'Room does not exist');
+      return;
+    }
   }
+
   const room = rooms.get(roomId);
   room.add(ws);
 
-  // Рассылаем сообщения внутри комнаты
+  console.log(`Peer ${peerId} joined room ${roomId}`);
+
   ws.on('message', (data) => {
-    console.log(`Room ${roomId}: ${data}`);
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch (e) {
+      return;
+    }
+
+    // Дополнительно: можно добавить создание комнаты через сообщение,
+    // но в текущей логике достаточно peerId="host"
     room.forEach(client => {
       if (client !== ws && client.readyState === WebSocket.OPEN) {
         client.send(data);
@@ -37,17 +55,22 @@ wss.on('connection', (ws, request) => {
     });
   });
 
-  // Удаляем при отключении
   ws.on('close', () => {
-    room.delete(ws);
-    if (room.size === 0) {
-      rooms.delete(roomId);
-      console.log(`Room ${roomId} deleted`);
+    if (rooms.has(roomId)) {
+      const room = rooms.get(roomId);
+      room.delete(ws);
+      if (room.size === 0) {
+        rooms.delete(roomId);
+        console.log(`Room ${roomId} deleted (no participants)`);
+      }
     }
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err);
   });
 });
 
-// HTTP-сервер для совместимости с Render
 const server = createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200);
